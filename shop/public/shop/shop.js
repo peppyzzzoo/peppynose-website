@@ -43,6 +43,8 @@
   }
   let catP;
   const cat = () => catP || (catP = api('/api/catalogue'));
+  // The "Test shop" banner goes once the owner turns the shop on (worker.js shopLive).
+  cat().then(c => { if (c.live) document.querySelectorAll('.shop-test').forEach(b => b.remove()); }).catch(() => { });
   const bySku = c => { const m = new Map(); c.products.forEach(p => p.variants.forEach(v => m.set(v.sku, { p, v }))); return m; };
   const hash = () => new URLSearchParams(location.hash.slice(1));
   const fail = (el, e) => { el.innerHTML = `<p class="sh-err">${esc(msg(e))}</p>`; };

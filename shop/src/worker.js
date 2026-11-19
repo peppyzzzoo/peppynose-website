@@ -17,6 +17,13 @@ const NEXT = {
   packed: ['shipped', 'refunded'], shipped: ['delivered'], delivered: ['refunded']
 };
 const INVOICE_OK = ['paid', 'packed', 'shipped', 'delivered'];
+
+// The shop is open to the public only when the owner sets SHOP_LIVE=1 AND real
+// payments are on (Razorpay with both keys). Otherwise the website shows no
+// "Buy from Peppynose" buttons, and the shop keeps its test banner and test invoice.
+export function shopLive(env) {
+  return env.SHOP_LIVE === '1' && env.PAYMENT_MODE === 'razorpay' && !!env.RAZORPAY_KEY_ID && !!env.RAZORPAY_KEY_SECRET;
+}
 const MAX_QTY = 10, MAX_LINES = 20;
 
 // ---------- small helpers ----------
@@ -68,7 +75,8 @@ async function catalogue(env) {
       variants: v.results.filter(x => x.product_slug === r.slug).map(x => ({ sku: x.sku, label: JSON.parse(x.label), price: x.price, mrp: x.mrp, stock: Math.min(x.stock, MAX_QTY) }))
     })),
     shipping: { fee: +s.shipping_fee, free_above: +s.free_shipping_above },
-    states: STATES
+    states: STATES,
+    live: shopLive(env)
   };
 }
 
@@ -243,7 +251,7 @@ body{font:15px/1.5 system-ui,sans-serif;color:#2e2a33;max-width:860px;margin:24p
 .test{background:#fff3cd;border:1px solid #e0c36c;padding:8px 12px;border-radius:8px;margin:0 0 16px}.grid{display:flex;flex-wrap:wrap;gap:24px;justify-content:space-between;margin:16px 0}
 table{width:100%;border-collapse:collapse;margin:12px 0}th,td{border-bottom:1px solid #ddd;padding:6px 4px;text-align:right;vertical-align:top}th:first-child,td:first-child{text-align:left}
 small{color:#6e6773}tfoot td{font-weight:700}.wrapt{overflow-x:auto}@media print{.test{border:1px solid #000}button{display:none}}</style></head><body>
-<p class="test"><b>TEST INVOICE — not valid for tax.</b> GST details to be confirmed by CA before the shop goes live.</p>
+${shopLive(env) ? '' : '<p class="test"><b>TEST INVOICE — not valid for tax.</b> GST details to be confirmed by CA before the shop goes live.</p>'}
 <h1>Tax invoice</h1>
 <div class="grid"><div><b>${esc(s.seller_name)}</b><br>${esc(s.seller_address)}<br>GSTIN: ${esc(s.seller_gstin || 'to be added')}<br>${esc(s.seller_email)}</div>
 <div>Invoice no: <b>PN-${o.number}</b><br>Date: ${esc(istDate(o.paid_at || o.created_at))}<br>Payment: ${esc(o.payment_mode === 'mock' ? 'test payment' : 'online (Razorpay)')}</div></div>

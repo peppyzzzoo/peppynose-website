@@ -22,6 +22,14 @@ npm run dev          # builds, makes a fresh test database, starts http://localh
 - `db/schema.sql` — the database tables (Cloudflare D1 / SQLite).
 - `public/shop/` — shop.js and shop.css used by the shop pages.
 
+## Opening the shop to the public
+One switch on the live Worker: `SHOP_LIVE = "1"` (in `wrangler.toml` `[vars]`, or in the Cloudflare dashboard). It only counts when real payments are on too: `PAYMENT_MODE = "razorpay"` and both `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` set as secrets (`src/worker.js` `shopLive`). Then:
+- `GET /api/catalogue` returns `live: true`.
+- The website (`peppynose/shop-link.js`) shows a **Buy from Peppynose** button next to Amazon.in and Flipkart, on the Shop page and on each buy page, for products the shop sells with stock. The Amazon.in and Flipkart buttons stay. Clicks are counted as the `shop_click` event (after cookie consent).
+- The shop pages drop the "Test shop" banner, and invoices drop the "TEST INVOICE" line.
+
+Until then the website shows no shop buttons at all. Before switching it on: GSTIN in settings, CA-confirmed GST, a real ₹1 order end to end.
+
 ## Test-only things to decide before going live
 - Payment is a pretend page (`PAYMENT_MODE=mock`). Razorpay is ready in the code; it needs Razorpay keys
   (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`) and `PAYMENT_MODE=razorpay`.
