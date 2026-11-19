@@ -4,7 +4,7 @@
 :root[data-theme="dark"] { --sh-ok: #6fd3a6; --sh-bad: #ff8a80; --sh-warn-bg: #3d3214; --sh-warn-ink: #f3dd9a; }
 
 /* "Buy from Peppynose" on the copy of the Shop page */
-.btn.sh-direct { background: var(--accent); color: #fff; margin: 0 0 12px; width: 100%; }
+.btn.sh-direct { background: var(--shop-buy); color: #fff; margin: 0 0 12px; width: 100%; }
 
 body.shop { overflow-x: hidden; }
 .shop [hidden] { display: none !important; }
@@ -21,6 +21,8 @@ body.shop { overflow-x: hidden; }
 .sh-cart-link { font-weight: 700; color: var(--ink) !important; }
 .shop .btn { background: var(--ink); color: var(--cream); cursor: pointer; font: inherit; font-weight: 700; }
 .shop .btn.plain { background: transparent; color: var(--ink); border-color: var(--line); }
+/* Buying and paying in our own shop: green (--shop-buy, styles.css), never Amazon's dark or Flipkart's blue. */
+.shop .btn.sh-add, .shop .btn.sh-pay { background: var(--shop-buy); color: #fff; }
 .shop .btn:disabled, .shop .btn.disabled { opacity: .45; pointer-events: none; }
 .sh-err { color: var(--sh-bad); font-weight: 600; }
 .sh-hint, .sh-note { color: var(--muted); font-size: .9rem; }

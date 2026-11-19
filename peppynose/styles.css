@@ -8,6 +8,7 @@
   --sky: #dcebf7;
   --sand: #f3ece4;
   --ink: #2e2a33;
+  --shop-buy: #1a7d44;   /* Peppynose shop buttons: green, unlike Amazon (dark) and Flipkart (blue); white text 5.2:1 */
   --muted: #6e6773;
   --line: #ece4dc;
   --accent: #1c86f5;
@@ -1148,7 +1149,7 @@ button.auth-skip-btn:focus-visible, button.auth-resend:focus-visible, #otp-reque
   .bar:has(> .lang-switch) > .pn-auth { grid-area: auth; justify-self: end; margin: 0 6px 0 0; }
 }
 /* "Buy from Peppynose" (shop-link.js): shown only when the shop is open */
-.btn.pn-shop-btn { background: var(--ink); color: var(--white); width: 100%; justify-content: center; text-align: center; }
+.btn.pn-shop-btn { background: var(--shop-buy); color: #fff; width: 100%; justify-content: center; text-align: center; }
 .card .btn.pn-shop-btn { margin: 0 0 12px; }
 .pn-shop-direct { margin: 4px 0 8px; }
 .pn-shop-direct .btn.pn-shop-btn { min-height: 52px; font-size: 1.05rem; }
