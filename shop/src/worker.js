@@ -3,6 +3,7 @@
 import { HttpError, authApi, corsHeaders, sessionUser } from './auth.js';
 import { accountApi, saveAddress } from './account.js';
 import { flushOutbox, mailReady, MAX_ATTEMPTS } from './mailer.js';
+import { CouponError, applyCoupon, couponFromAdmin, couponMessage, spreadDiscount } from './coupons.js';
 
 const enc = new TextEncoder();
 
@@ -81,8 +82,10 @@ async function catalogue(env) {
   };
 }
 
-// Prices one cart from the database. Throws 409 when something is no longer available.
-async function price(env, rawItems) {
+// Prices one cart from the database. Throws 409 when something is no longer available,
+// 400 (code "coupon_<reason>") when a coupon code does not apply. The discount is
+// taken off the items; free delivery is judged on what is paid for the items.
+async function price(env, rawItems, couponCode = null, customer = null) {
   if (!Array.isArray(rawItems) || !rawItems.length) throw new HttpError(400, 'Your cart is empty.');
   const want = new Map();
   for (const it of rawItems.slice(0, MAX_LINES)) {
@@ -103,8 +106,27 @@ async function price(env, rawItems) {
   }
   const s = await settings(env.DB);
   const subtotal = lines.reduce((t, l) => t + l.unit_price * l.qty, 0);
-  const shipping = subtotal >= +s.free_shipping_above ? 0 : +s.shipping_fee;
-  return { lines, subtotal, shipping, total: subtotal + shipping, settings: s };
+  let discount = 0, coupon = null;
+  if (couponCode) {
+    try { ({ code: coupon, discount } = await applyCoupon(env, couponCode, subtotal, customer)); }
+    catch (e) {
+      if (!(e instanceof CouponError)) throw e;
+      throw new HttpError(400, couponMessage(e.reason), { code: 'coupon_' + e.reason, ...e.extra });
+    }
+  }
+  const items = subtotal - discount;
+  const shipping = items >= +s.free_shipping_above ? 0 : +s.shipping_fee;
+  return { lines, subtotal, discount, coupon, shipping, total: items + shipping, settings: s };
+}
+
+// The cart page and checkout show the price before ordering. customer (email,
+// phone) is optional here; checkout checks "once per customer" again.
+async function quote(req, env) {
+  const b = await body(req);
+  const c = b.customer || {};
+  const who = { email: str(c.email, 120).toLowerCase(), phone: str(c.phone, 20).replace(/[\s-]/g, '').replace(/^(\+91|0)/, '') };
+  const q = await price(env, b.items, str(b.coupon, 40) || null, who);
+  return json({ subtotal: q.subtotal, discount: q.discount, coupon: q.coupon, shipping: q.shipping, total: q.total });
 }
 
 function customer(c) {
@@ -129,7 +151,7 @@ function customer(c) {
 async function checkout(req, env) {
   const b = await body(req);
   const cust = customer(b.customer);
-  const q = await price(env, b.items);
+  const q = await price(env, b.items, str(b.coupon, 40) || null, cust);
   const mode = env.PAYMENT_MODE === 'razorpay' ? 'razorpay' : 'mock';
   const lang = ['en', 'ta', 'hi'].includes(b.lang) ? b.lang : 'en';
   // A logged-in customer's order also shows on their account. Guests need no account.
@@ -139,8 +161,8 @@ async function checkout(req, env) {
   let gateway = null;
   if (mode === 'razorpay') gateway = await razorpayOrder(env, q.total, number);
   await env.DB.batch([
-    env.DB.prepare(`INSERT INTO orders (id, number, token, status, lang, created_at, customer, state, subtotal, shipping, total, payment_mode, gateway_order, user_id)
-      VALUES (?, ?, ?, 'pending_payment', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id, number, token, lang, at, JSON.stringify(cust), cust.state, q.subtotal, q.shipping, q.total, mode, gateway, user ? user.user_id : null),
+    env.DB.prepare(`INSERT INTO orders (id, number, token, status, lang, created_at, customer, state, subtotal, shipping, total, payment_mode, gateway_order, user_id, coupon_code, discount)
+      VALUES (?, ?, ?, 'pending_payment', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id, number, token, lang, at, JSON.stringify(cust), cust.state, q.subtotal, q.shipping, q.total, mode, gateway, user ? user.user_id : null, q.coupon, q.discount),
     ...q.lines.map(l => env.DB.prepare('INSERT INTO order_items (order_id, sku, name, label, qty, unit_price, gst_rate, hsn) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .bind(id, l.sku, l.name, l.label, l.qty, l.unit_price, l.gst_rate, l.hsn)),
     env.DB.prepare('INSERT INTO order_events (order_id, at, status, note) VALUES (?, ?, ?, ?)').bind(id, at, 'pending_payment', 'Order placed')
@@ -174,6 +196,9 @@ const items = (env, id) => env.DB.prepare('SELECT sku, name, label, qty, unit_pr
 const outbox = (env, order, kind, to, subject, text) =>
   env.DB.prepare('INSERT INTO outbox (order_id, kind, to_addr, subject, body, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(order, kind, to, subject, text, now());
 
+// A paid order counts as one use of its coupon.
+const couponUse = (env, o) => o.coupon_code ? [env.DB.prepare('UPDATE coupons SET used_count = used_count + 1 WHERE code = ?').bind(o.coupon_code)] : [];
+
 // Marks an order paid and takes the stock — exactly once, however many times the payment is reported.
 async function finalize(env, o, ref) {
   const nonce = randHex(16), at = now();
@@ -186,6 +211,7 @@ async function finalize(env, o, ref) {
     await env.DB.batch([   // one transaction: if any stock would go below 0 (CHECK), nothing here is saved
       ...list.map(i => env.DB.prepare('UPDATE variants SET stock = stock - ? WHERE sku = ?').bind(i.qty, i.sku)),
       env.DB.prepare("UPDATE orders SET status = 'paid', paid_at = ? WHERE id = ? AND finalize_nonce = ?").bind(at, o.id, nonce),
+      ...couponUse(env, o),
       env.DB.prepare('INSERT INTO order_events (order_id, at, status, note) VALUES (?, ?, ?, ?)').bind(o.id, at, 'paid', 'Payment received'),
       outbox(env, o.id, 'order_paid', cust.email, `Peppynose order PN-${o.number} confirmed`,
         `Hi ${cust.name},\n\nThank you! We received your payment of ${rupees(o.total)} for order PN-${o.number}.\nWe will pack it soon and send you the tracking number.\n\nSee your order: ${link}\n\n— Peppynose`),
@@ -196,6 +222,7 @@ async function finalize(env, o, ref) {
     // Paid, but stock ran out between checkout and payment: keep the money safe, let the owner decide (ship later or refund).
     await env.DB.batch([
       env.DB.prepare("UPDATE orders SET status = 'paid_review', paid_at = ? WHERE id = ? AND finalize_nonce = ?").bind(at, o.id, nonce),
+      ...couponUse(env, o),
       env.DB.prepare('INSERT INTO order_events (order_id, at, status, note) VALUES (?, ?, ?, ?)').bind(o.id, at, 'paid_review', 'Paid, but stock was not enough — owner to check'),
       outbox(env, o.id, 'seller_review', s.seller_email, `CHECK order PN-${o.number}: paid but out of stock`, `Order PN-${o.number} was paid (${rupees(o.total)}) but stock was not enough. Ship when you have stock, or refund.`)
     ]);
@@ -232,7 +259,7 @@ async function orderView(url, env) {
   return json({
     number: 'PN-' + o.number, status: o.status, created_at: o.created_at, paid_at: o.paid_at, customer: JSON.parse(o.customer),
     items: list.map(i => ({ sku: i.sku, name: i.name, label: i.label, qty: i.qty, unit_price: i.unit_price })),
-    subtotal: o.subtotal, shipping: o.shipping, total: o.total, tracking: o.tracking, events: ev.results,
+    subtotal: o.subtotal, discount: o.discount || 0, coupon: o.coupon_code || '', shipping: o.shipping, total: o.total, tracking: o.tracking, events: ev.results,
     pay_mode: o.payment_mode, can_pay: ['pending_payment', 'payment_failed'].includes(o.status) && !o.finalize_nonce, invoice: INVOICE_OK.includes(o.status)
   });
 }
@@ -244,7 +271,9 @@ async function invoice(url, env) {
   const list = await items(env, o.id), s = await settings(env.DB), c = JSON.parse(o.customer);
   const intra = o.state === s.seller_state;
   const split = (gross, rate) => { const taxable = Math.round(gross * 100 / (100 + rate)); return { taxable, tax: gross - taxable }; };
-  const rows = list.map(i => ({ desc: `${i.name} — ${i.label}`, hsn: i.hsn || '—', qty: i.qty, rate: i.gst_rate, gross: i.unit_price * i.qty, ...split(i.unit_price * i.qty, i.gst_rate) }));
+  // A coupon discount lowers each line's value before GST is worked out on it.
+  const off = spreadDiscount(list.map(i => i.unit_price * i.qty), o.discount || 0);
+  const rows = list.map((i, k) => { const gross = i.unit_price * i.qty - off[k]; return { desc: `${i.name} — ${i.label}`, hsn: i.hsn || '—', qty: i.qty, rate: i.gst_rate, gross, ...split(gross, i.gst_rate) }; });
   if (o.shipping) { const rate = Math.max(...list.map(i => i.gst_rate)); rows.push({ desc: 'Delivery charges', hsn: '9965', qty: 1, rate, gross: o.shipping, ...split(o.shipping, rate) }); }
   const sum = k => rows.reduce((t, r) => t + r[k], 0);
   const taxCols = r => intra ? `<td>${rupees(Math.floor(r.tax / 2))}<small> @${r.rate / 2}%</small></td><td>${rupees(r.tax - Math.floor(r.tax / 2))}<small> @${r.rate / 2}%</small></td>` : `<td>${rupees(r.tax)}<small> @${r.rate}%</small></td>`;
@@ -262,7 +291,7 @@ ${shopLive(env) ? '' : '<p class="test"><b>TEST INVOICE — not valid for tax.</
 <div class="wrapt"><table><thead><tr><th>Item</th><th>HSN/SAC</th><th>Qty</th><th>Taxable value</th>${intra ? '<th>CGST</th><th>SGST</th>' : '<th>IGST</th>'}<th>Total</th></tr></thead><tbody>
 ${rows.map(r => `<tr><td>${esc(r.desc)}</td><td>${esc(r.hsn)}</td><td>${r.qty}</td><td>${rupees(r.taxable)}</td>${taxCols(r)}<td>${rupees(r.gross)}</td></tr>`).join('\n')}
 </tbody><tfoot><tr><td colspan="3">Total</td><td>${rupees(sum('taxable'))}</td>${intra ? `<td colspan="2">${rupees(sum('tax'))}</td>` : `<td>${rupees(sum('tax'))}</td>`}<td>${rupees(o.total)}</td></tr></tfoot></table></div>
-<p><small>Prices include GST. This is a computer-generated invoice.</small></p><button onclick="print()">Print / save as PDF</button></body></html>`;
+${o.discount ? `<p><small>Line values are after a discount of ${rupees(o.discount)} (coupon ${esc(o.coupon_code)}).</small></p>` : ''}<p><small>Prices include GST. This is a computer-generated invoice.</small></p><button onclick="print()">Print / save as PDF</button></body></html>`;
   return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8', ...SEC, 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" } });
 }
 
@@ -305,7 +334,7 @@ async function adminOrder(url, env) {
   if (!o) throw new HttpError(404, 'Order not found.');
   const [list, ev] = await Promise.all([items(env, o.id), env.DB.prepare('SELECT at, status, note FROM order_events WHERE order_id = ? ORDER BY at').bind(o.id).all()]);
   return json({ id: o.id, number: 'PN-' + o.number, status: o.status, created_at: o.created_at, paid_at: o.paid_at, customer: JSON.parse(o.customer), items: list,
-    subtotal: o.subtotal, shipping: o.shipping, total: o.total, payment_mode: o.payment_mode, payment_ref: o.payment_ref, tracking: o.tracking, note: o.admin_note,
+    subtotal: o.subtotal, discount: o.discount || 0, coupon: o.coupon_code || '', shipping: o.shipping, total: o.total, payment_mode: o.payment_mode, payment_ref: o.payment_ref, tracking: o.tracking, note: o.admin_note,
     events: ev.results, next: NEXT[o.status] || [], link: orderLink(o) });
 }
 
@@ -356,6 +385,30 @@ async function adminOutbox(env) {
   return json({ sending: mailReady(env), max_attempts: MAX_ATTEMPTS, messages: results.map(m => ({ ...m, number: m.number ? 'PN-' + m.number : '' })) });
 }
 
+async function adminCoupons(env) {
+  const { results } = await env.DB.prepare('SELECT * FROM coupons ORDER BY created_at DESC').all();
+  return json({ coupons: results.map(c => ({ ...c, active: !!c.active, once_per_customer: !!c.once_per_customer })) });
+}
+
+// Adds a coupon, or changes one with the same code (its use count stays).
+async function saveCoupon(req, env) {
+  const { bad, coupon: c } = couponFromAdmin(await body(req));
+  if (Object.keys(bad).length) throw new HttpError(400, 'Please check the coupon.', { fields: bad });
+  await env.DB.prepare(`INSERT INTO coupons (code, kind, value, min_subtotal, max_discount, max_uses, starts_at, ends_at, once_per_customer, active, used_count, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+    ON CONFLICT(code) DO UPDATE SET kind = excluded.kind, value = excluded.value, min_subtotal = excluded.min_subtotal, max_discount = excluded.max_discount,
+      max_uses = excluded.max_uses, starts_at = excluded.starts_at, ends_at = excluded.ends_at, once_per_customer = excluded.once_per_customer, active = excluded.active`)
+    .bind(c.code, c.kind, c.value, c.min_subtotal, c.max_discount, c.max_uses, c.starts_at, c.ends_at, c.once_per_customer, c.active, now()).run();
+  return json({ ok: true, code: c.code });
+}
+
+async function setCouponActive(req, env) {
+  const b = await body(req);
+  const r = await env.DB.prepare('UPDATE coupons SET active = ? WHERE code = ?').bind(b.active ? 1 : 0, str(b.code, 40).toUpperCase()).run();
+  if (!r.meta.changes) throw new HttpError(404, 'Coupon not found.');
+  return json({ ok: true });
+}
+
 async function admin(req, url, env) {
   const path = url.pathname.slice('/api/admin/'.length), m = req.method;
   if (req.headers.get('x-pn-admin') !== '1') throw new HttpError(403, 'Forbidden.');   // CSRF guard: other sites cannot add this header
@@ -369,6 +422,9 @@ async function admin(req, url, env) {
   if (path === 'products' && m === 'GET') return adminProducts(env);
   if (path === 'variant' && m === 'POST') return setVariant(req, env);
   if (path === 'outbox' && m === 'GET') return adminOutbox(env);
+  if (path === 'coupons' && m === 'GET') return adminCoupons(env);
+  if (path === 'coupon' && m === 'POST') return saveCoupon(req, env);
+  if (path === 'coupon-active' && m === 'POST') return setCouponActive(req, env);
   throw new HttpError(404, 'Not found.');
 }
 
@@ -379,6 +435,7 @@ async function api(req, url, env) {
   if (p.startsWith('/api/account/')) return accountApi(req, env, { orderLink });
   if (p === '/api/catalogue' && m === 'GET') return json(await catalogue(env));
   if (p === '/api/checkout' && m === 'POST') return checkout(req, env);
+  if (p === '/api/quote' && m === 'POST') return quote(req, env);
   if (p === '/api/pay/mock' && m === 'POST') return payMock(req, env);
   if (p === '/api/pay/razorpay' && m === 'POST') return payRazorpay(req, env);
   if (p === '/api/order' && m === 'GET') return orderView(url, env);

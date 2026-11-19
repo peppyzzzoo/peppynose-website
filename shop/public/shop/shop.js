@@ -90,12 +90,14 @@
 
   // ---- cart page ----
   const cartEl = $('cart');
-  function totals(c, lines) {
+  // disc: a coupon discount the server has confirmed (it always works the price out again).
+  function totals(c, lines, disc = 0, code = '') {
     const sub = lines.reduce((t, l) => t + l.v.price * l.qty, 0);
-    const ship = sub >= c.shipping.free_above ? 0 : c.shipping.fee;
-    return { sub, ship, total: sub + ship };
+    const ship = sub - disc >= c.shipping.free_above ? 0 : c.shipping.fee;
+    return { sub, disc, code, ship, total: sub - disc + ship };
   }
   const totalRows = (c, x, hint = true) => `<div class="sh-tot"><span>${esc(t('items'))}</span><b>${rupees(x.sub)}</b></div>
+    ${x.disc ? `<div class="sh-tot sh-disc"><span>${esc(t('discount', { code: x.code }))}</span><b>−${rupees(x.disc)}</b></div>` : ''}
     <div class="sh-tot"><span>${esc(t('delivery'))}</span><b>${x.ship ? rupees(x.ship) : esc(t('free'))}</b></div>
     ${x.ship && hint ? `<p class="sh-hint">${esc(t('free_hint', { p: rupees(c.shipping.free_above) }))}</p>` : ''}
     <div class="sh-tot sh-grand"><span>${esc(t('total'))}</span><b>${rupees(x.total)}</b></div>`;
@@ -183,17 +185,63 @@
       account();
       const lines = cartLines(c);
       if (!lines.length) { co.innerHTML = empty(); return; }
-      sum.innerHTML = `<h2>${esc(t('order_title'))}</h2><ul class="sh-mini">${lines.map(l => `<li><span>${esc(n(l.p.name))} — ${esc(n(l.v.label))} × ${l.qty}</span><b>${rupees(l.v.price * l.qty)}</b></li>`).join('')}</ul>${totalRows(c, totals(c, lines))}<p class="sh-hint"><a href="cart.html">${esc(t('change_cart'))}</a></p>`;
+      catalogue = c; cartNow = lines;
+      drawSummary();
+      if (coupon) applyCoupon(coupon.code, true);
     }).catch(e => { err.textContent = msg(e); });
+
+    // ---- coupon (the server checks the code and works out the discount) ----
+    let catalogue = null, cartNow = [], coupon = null;
+    try { const c = JSON.parse(sessionStorage.getItem('pn_coupon') || 'null'); if (c && typeof c.code === 'string') coupon = { code: c.code, discount: 0 }; } catch { }
+    const keepCoupon = () => { try { coupon ? sessionStorage.setItem('pn_coupon', JSON.stringify({ code: coupon.code })) : sessionStorage.removeItem('pn_coupon'); } catch { } };
+    const couponMsg = e => {
+      const r = e && e.data && typeof e.data.code === 'string' && e.data.code.startsWith('coupon_') ? e.data.code.slice(7) : '';
+      if (!r) return msg(e);
+      return r === 'min_subtotal' ? t('c_min', { p: rupees(e.data.min_subtotal || 0) }) : t('c_' + r);
+    };
+    function drawSummary(note = '', bad = false) {
+      const c = catalogue, lines = cartNow;
+      const x = totals(c, lines, coupon ? coupon.discount : 0, coupon ? coupon.code : '');
+      sum.innerHTML = `<h2>${esc(t('order_title'))}</h2><ul class="sh-mini">${lines.map(l => `<li><span>${esc(n(l.p.name))} — ${esc(n(l.v.label))} × ${l.qty}</span><b>${rupees(l.v.price * l.qty)}</b></li>`).join('')}</ul>
+        <div class="sh-coupon">${coupon && coupon.discount
+          ? `<p class="sh-ok" role="status">${esc(t('coupon_ok', { code: coupon.code, p: rupees(coupon.discount) }))}</p><button type="button" class="sh-link" id="coupon-remove">${esc(t('remove_coupon'))}</button>`
+          : `<label>${esc(t('l_coupon'))}<span class="sh-coupon-row"><input id="coupon-code" name="coupon" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="24" value="${esc(coupon ? coupon.code : '')}"><button type="button" class="btn small plain" id="coupon-apply">${esc(t('apply'))}</button></span></label>`}
+          <p class="sh-err" id="coupon-err" role="alert">${bad ? esc(note) : ''}</p></div>
+        ${totalRows(c, x)}<p class="sh-hint"><a href="cart.html">${esc(t('change_cart'))}</a></p>`;
+      const ap = $('coupon-apply'), rm = $('coupon-remove'), inp = $('coupon-code');
+      if (ap) ap.addEventListener('click', () => applyCoupon(inp.value));
+      if (inp) inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); applyCoupon(inp.value); } });
+      if (rm) rm.addEventListener('click', () => { coupon = null; keepCoupon(); drawSummary(); });
+    }
+    async function applyCoupon(raw, quiet = false) {
+      const code = String(raw || '').trim().toUpperCase();
+      if (!code) return;
+      const f = co.elements;
+      try {
+        const q = await api('/api/quote', { method: 'POST', body: JSON.stringify({ items: read(), coupon: code, customer: { email: f.email.value, phone: f.phone.value } }) });
+        coupon = { code: q.coupon, discount: q.discount };
+        keepCoupon(); drawSummary();
+      } catch (e) {
+        coupon = null; keepCoupon();
+        if (quiet) { drawSummary(); return; }
+        drawSummary(couponMsg(e), true);
+        const inp = $('coupon-code'); if (inp) { inp.value = code; inp.focus(); }
+      }
+    }
     co.addEventListener('submit', async e => {
       e.preventDefault();
       err.textContent = ''; showErrs({}); btn.disabled = true;
       const f = co.elements, customer = {};
       ['name', 'phone', 'email', 'address1', 'address2', 'city', 'pincode', 'state'].forEach(k => { customer[k] = f[k].value; });
       try {
-        const r = await api('/api/checkout', { method: 'POST', body: JSON.stringify({ items: read(), customer, lang: L, save_address: !!(saveBox && saveBox.checked) }) });
+        const r = await api('/api/checkout', { method: 'POST', body: JSON.stringify({ items: read(), customer, lang: L, save_address: !!(saveBox && saveBox.checked), coupon: coupon && coupon.discount ? coupon.code : '' }) });
+        coupon = null; keepCoupon();
         location.href = `pay.html#o=${r.order}&t=${r.token}`;
       } catch (x) {
+        if (x.data && typeof x.data.code === 'string' && x.data.code.startsWith('coupon_')) {
+          // The coupon no longer applies (e.g. once per customer, or used up): show why, without it.
+          const why = couponMsg(x); coupon = null; keepCoupon(); drawSummary(why, true); btn.disabled = false; return;
+        }
         err.textContent = msg(x); showErrs(x.data && x.data.fields); btn.disabled = false;
         if (x.status === 409) err.innerHTML = `${esc(msg(x))} <a href="cart.html">${esc(t('go_cart'))}</a>`;
       }
@@ -235,7 +283,7 @@
         ${d.tracking ? `<p><b>${esc(t('tracking'))}</b> ${esc(d.tracking)}</p>` : ''}
         ${d.can_pay ? `<p><a class="btn sh-pay" href="pay.html#o=${esc(o)}&t=${esc(tk)}">${esc(t('pay_now'))}</a></p>` : ''}
         <div class="sh-summary"><ul class="sh-mini">${d.items.map(i => { const x = m.get(i.sku); return `<li><span>${esc(x ? n(x.p.name) : i.name)} — ${esc(x ? n(x.v.label) : i.label)} × ${i.qty}</span><b>${rupees(i.unit_price * i.qty)}</b></li>`; }).join('')}</ul>
-        ${totalRows(null, { sub: d.subtotal, ship: d.shipping, total: d.total }, false)}</div>
+        ${totalRows(null, { sub: d.subtotal, disc: d.discount, code: d.coupon, ship: d.shipping, total: d.total }, false)}</div>
         <h2>${esc(t('delivery_to'))}</h2><p>${esc(c.name)}<br>${esc(c.address1)}${c.address2 ? '<br>' + esc(c.address2) : ''}<br>${esc(c.city)} - ${esc(c.pincode)}, ${esc(c.state)}<br>${esc(t('mobile'))} ${esc(c.phone)}</p>
         ${d.invoice ? `<p><a class="btn plain" href="/api/invoice?${q}" target="_blank" rel="noopener">${esc(t('invoice'))}</a></p>` : ''}
         <p class="sh-hint">${esc(t('keep_link'))} <a href="mailto:care.peppynose@gmail.com">care.peppynose@gmail.com</a></p>`;
@@ -261,7 +309,7 @@
 
     async function draw() {
       panel.hidden = false;
-      panel.innerHTML = `<div class="sh-tabs" role="tablist">${[['orders', 'Orders'], ['products', 'Prices & stock'], ['outbox', 'Messages']].map(([k, n]) => `<button type="button" role="tab" data-tab="${k}" aria-selected="${tab === k}">${n}</button>`).join('')}<button type="button" class="sh-logout" data-logout>Log out</button></div><div id="adm-body"><p>Loading…</p></div>`;
+      panel.innerHTML = `<div class="sh-tabs" role="tablist">${[['orders', 'Orders'], ['products', 'Prices & stock'], ['coupons', 'Coupons'], ['outbox', 'Messages']].map(([k, n]) => `<button type="button" role="tab" data-tab="${k}" aria-selected="${tab === k}">${n}</button>`).join('')}<button type="button" class="sh-logout" data-logout>Log out</button></div><div id="adm-body"><p>Loading…</p></div>`;
       const box = $('adm-body');
       try {
         if (tab === 'orders') {
@@ -272,6 +320,25 @@
         } else if (tab === 'products') {
           const d = await A('products');
           box.innerHTML = `<p class="sh-hint">Prices include GST. Change a price or stock and press Save.</p><div class="sh-table"><table><thead><tr><th>Product</th><th>Pack</th><th>Price (₹)</th><th>Stock</th><th></th></tr></thead><tbody>${d.products.map(p => p.variants.map(v => `<tr data-sku="${esc(v.sku)}"><td>${esc(p.name)}${p.gst_confirmed ? '' : '<br><small>GST/HSN: to confirm with CA</small>'}</td><td>${esc(v.label)}</td><td><input aria-label="Price for ${esc(p.name)} ${esc(v.label)}" name="price" inputmode="decimal" value="${(v.price / 100).toFixed(v.price % 100 ? 2 : 0)}" size="7"></td><td><input aria-label="Stock for ${esc(p.name)} ${esc(v.label)}" name="stock" inputmode="numeric" value="${v.stock}" size="5"></td><td><button type="button" class="btn small" data-save>Save</button> <span class="sh-saved" role="status"></span></td></tr>`).join('')).join('')}</tbody></table></div>`;
+        } else if (tab === 'coupons') {
+          const d = await A('coupons');
+          const off = c => c.kind === 'percent' ? `${c.value}% off${c.max_discount ? ` (up to ${rupees(c.max_discount)})` : ''}` : `${rupees(c.value)} off`;
+          const day = iso => iso ? new Date(iso).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium' }) : '';
+          const rules = c => [c.min_subtotal ? `order ${rupees(c.min_subtotal)}+` : '', c.once_per_customer ? 'once per customer' : '',
+            c.starts_at ? `from ${day(c.starts_at)}` : '', c.ends_at ? `until ${day(c.ends_at)}` : ''].filter(Boolean).join(' · ') || 'no limits';
+          box.innerHTML = `<p class="sh-hint">Customers type the code at checkout. The discount comes off the items, not delivery. A use counts when the order is paid.</p>
+            ${d.coupons.length ? `<div class="sh-table"><table><thead><tr><th>Code</th><th>Discount</th><th>Rules</th><th>Used</th><th></th></tr></thead><tbody>${d.coupons.map(c => `<tr data-code="${esc(c.code)}"><td><b>${esc(c.code)}</b>${c.active ? '' : '<br><small>paused</small>'}</td><td>${esc(off(c))}</td><td><small>${esc(rules(c))}</small></td><td>${c.used_count}${c.max_uses != null ? ` / ${c.max_uses}` : ''}</td><td><button type="button" class="btn small plain" data-coupon-active="${c.active ? 0 : 1}">${c.active ? 'Pause' : 'Resume'}</button></td></tr>`).join('')}</tbody></table></div>` : '<p>No coupons yet.</p>'}
+            <form id="coupon-form" class="sh-form sh-narrow"><h2>Add a coupon</h2>
+              <label>Code (e.g. FIRST10)<input name="code" required maxlength="24" autocapitalize="characters" spellcheck="false"></label>
+              <label>Type<select name="kind"><option value="percent">% off</option><option value="amount">₹ off</option></select></label>
+              <label>How much (% or ₹)<input name="value" required inputmode="decimal"></label>
+              <label>Most it can take off, for % (₹, optional)<input name="max_discount" inputmode="decimal"></label>
+              <label>Minimum order (₹, optional)<input name="min_subtotal" inputmode="decimal"></label>
+              <label>How many orders can use it (optional)<input name="max_uses" inputmode="numeric"></label>
+              <div class="sh-row"><label>Starts (optional)<input name="starts_at" type="date"></label><label>Ends (optional)<input name="ends_at" type="date"></label></div>
+              <label class="sh-check"><input type="checkbox" name="once_per_customer"> Once per customer (same email or mobile)</label>
+              <p class="sh-err" id="coupon-form-err" role="alert"></p>
+              <button class="btn" type="submit">Save coupon</button></form>`;
         } else {
           const d = await A('outbox');
           // Sent / waiting / failed, from src/mailer.js. While sending is off, emails are only saved.
@@ -317,6 +384,26 @@
         try { await A('variant', { method: 'POST', body: JSON.stringify({ sku: tr.dataset.sku, price, stock }) }); out.textContent = 'Saved'; out.classList.remove('sh-err'); }
         catch (x) { out.textContent = x.message; out.classList.add('sh-err'); }
       }
+    });
+    // Coupons: rupees in the form, paise to the server; a date "ends" covers that whole day (IST).
+    const paise = v => (v.trim() === '' ? '' : Math.round(parseFloat(v) * 100));
+    panel.addEventListener('submit', async e => {
+      const f = e.target.closest('#coupon-form'); if (!f) return;
+      e.preventDefault();
+      const el = f.elements, kind = el.kind.value, out = $('coupon-form-err');
+      const b = {
+        code: el.code.value, kind, value: kind === 'percent' ? Math.round(parseFloat(el.value.value)) : paise(el.value.value),
+        max_discount: kind === 'percent' ? paise(el.max_discount.value) : '', min_subtotal: paise(el.min_subtotal.value), max_uses: el.max_uses.value.trim(),
+        starts_at: el.starts_at.value ? el.starts_at.value + 'T00:00:00+05:30' : '', ends_at: el.ends_at.value ? el.ends_at.value + 'T23:59:59+05:30' : '',
+        once_per_customer: el.once_per_customer.checked
+      };
+      try { await A('coupon', { method: 'POST', body: JSON.stringify(b) }); draw(); }
+      catch (x) { out.textContent = x.data && x.data.fields ? Object.values(x.data.fields).join(' ') : x.message; }
+    });
+    panel.addEventListener('click', async e => {
+      const ca = e.target.closest('[data-coupon-active]'); if (!ca) return;
+      try { await A('coupon-active', { method: 'POST', body: JSON.stringify({ code: ca.closest('tr').dataset.code, active: ca.dataset.couponActive === '1' }) }); draw(); }
+      catch (x) { ca.textContent = x.message; }
     });
     panel.addEventListener('change', e => { if (e.target.id === 'adm-filter') { filter = e.target.value; draw(); } });
     A('me').then(draw).catch(showLogin);

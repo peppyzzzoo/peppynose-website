@@ -1,5 +1,6 @@
 -- Peppynose own shop: database schema (Cloudflare D1 / SQLite).
 -- Money is always stored in paise (₹1 = 100). Prices include GST, as shown to customers.
+DROP TABLE IF EXISTS coupons;
 DROP TABLE IF EXISTS tracker_data;
 DROP TABLE IF EXISTS addresses;
 DROP TABLE IF EXISTS auth_otps;
@@ -60,7 +61,10 @@ CREATE TABLE orders (
   finalize_nonce TEXT,                      -- makes "mark as paid + take stock" happen exactly once
   tracking       TEXT,
   admin_note     TEXT,
-  user_id        TEXT                       -- the customer's account, or NULL for a guest (or a deleted account)
+  user_id        TEXT,                      -- the customer's account, or NULL for a guest (or a deleted account)
+  coupon_code    TEXT,                      -- coupon used, if any (see coupons)
+  -- discount: paise taken off the items by the coupon; total is already after it
+  discount       INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX orders_status ON orders(status, created_at);
 CREATE INDEX orders_user ON orders(user_id, created_at);
@@ -108,7 +112,7 @@ CREATE TABLE login_attempts (ip TEXT NOT NULL, at TEXT NOT NULL);
 -- email_verified is 1 only for an email Google verified. A typed email is 0 and
 -- a verified Google sign-in for that address can take it over.
 -- This file is for a fresh local database only. A live database uses
--- auth-migration.sql and auth-migration-002.sql to auth-migration-006.sql.
+-- auth-migration.sql and auth-migration-002.sql to auth-migration-007.sql.
 CREATE TABLE users (
   id               TEXT PRIMARY KEY,
   email            TEXT UNIQUE COLLATE NOCASE,
@@ -169,4 +173,21 @@ CREATE TABLE tracker_data (
   user_id    TEXT PRIMARY KEY,
   data       TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+-- Discount coupons (src/coupons.js). Money in paise. kind "percent": value 1-90, optional max_discount;
+-- kind "amount": value off. used_count counts paid orders with the code.
+CREATE TABLE coupons (
+  code              TEXT PRIMARY KEY,
+  kind              TEXT NOT NULL CHECK (kind IN ('percent', 'amount')),
+  value             INTEGER NOT NULL CHECK (value > 0),
+  min_subtotal      INTEGER NOT NULL DEFAULT 0,
+  max_discount      INTEGER,
+  max_uses          INTEGER,
+  used_count        INTEGER NOT NULL DEFAULT 0,
+  starts_at         TEXT,
+  ends_at           TEXT,
+  once_per_customer INTEGER NOT NULL DEFAULT 0,
+  active            INTEGER NOT NULL DEFAULT 1,
+  created_at        TEXT NOT NULL
 );

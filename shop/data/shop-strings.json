@@ -126,7 +126,19 @@
   "country_China": "China",
   "saved_address": "Saved address",
   "new_address": "A new address",
-  "save_address": "Save this address to my account"
+  "save_address": "Save this address to my account",
+  "l_coupon": "Coupon code",
+  "apply": "Apply",
+  "remove_coupon": "Remove coupon",
+  "discount": "Discount ({code})",
+  "coupon_ok": "Coupon {code} applied. You save {p}.",
+  "c_unknown": "This coupon code is not valid.",
+  "c_paused": "This coupon is not active right now.",
+  "c_not_started": "This coupon is not active yet.",
+  "c_expired": "This coupon has expired.",
+  "c_used_up": "This coupon has been used up.",
+  "c_min": "Add items worth {p} or more to use this coupon.",
+  "c_once": "This coupon can be used only once per customer."
  },
  "ta": {
   "lang_name": "தமிழ்",
@@ -254,7 +266,19 @@
   "country_China": "சீனா",
   "saved_address": "சேமித்த முகவரி",
   "new_address": "புதிய முகவரி",
-  "save_address": "இந்த முகவரியை என் கணக்கில் சேமி"
+  "save_address": "இந்த முகவரியை என் கணக்கில் சேமி",
+  "l_coupon": "கூப்பன் குறியீடு",
+  "apply": "பயன்படுத்து",
+  "remove_coupon": "கூப்பனை நீக்கு",
+  "discount": "தள்ளுபடி ({code})",
+  "coupon_ok": "கூப்பன் {code} பயன்படுத்தப்பட்டது. நீங்கள் {p} சேமிக்கிறீர்கள்.",
+  "c_unknown": "இந்தக் கூப்பன் குறியீடு செல்லாது.",
+  "c_paused": "இந்தக் கூப்பன் இப்போது செயலில் இல்லை.",
+  "c_not_started": "இந்தக் கூப்பன் இன்னும் தொடங்கவில்லை.",
+  "c_expired": "இந்தக் கூப்பனின் காலம் முடிந்துவிட்டது.",
+  "c_used_up": "இந்தக் கூப்பன் முழுமையாகப் பயன்படுத்தப்பட்டுவிட்டது.",
+  "c_min": "இந்தக் கூப்பனைப் பயன்படுத்த {p} அல்லது அதற்கு மேல் பொருட்களைச் சேர்க்கவும்.",
+  "c_once": "இந்தக் கூப்பனை ஒரு வாடிக்கையாளர் ஒரு முறை மட்டுமே பயன்படுத்தலாம்."
  },
  "hi": {
   "lang_name": "हिन्दी",
@@ -382,6 +406,18 @@
   "country_China": "चीन",
   "saved_address": "सेव किया पता",
   "new_address": "नया पता",
-  "save_address": "यह पता मेरे खाते में सेव करें"
+  "save_address": "यह पता मेरे खाते में सेव करें",
+  "l_coupon": "कूपन कोड",
+  "apply": "लागू करें",
+  "remove_coupon": "कूपन हटाएँ",
+  "discount": "छूट ({code})",
+  "coupon_ok": "कूपन {code} लागू हुआ। आपकी बचत {p}।",
+  "c_unknown": "यह कूपन कोड मान्य नहीं है।",
+  "c_paused": "यह कूपन अभी चालू नहीं है।",
+  "c_not_started": "यह कूपन अभी शुरू नहीं हुआ है।",
+  "c_expired": "इस कूपन की समय-सीमा खत्म हो गई है।",
+  "c_used_up": "यह कूपन पूरा इस्तेमाल हो चुका है।",
+  "c_min": "यह कूपन इस्तेमाल करने के लिए {p} या उससे ज़्यादा का सामान जोड़ें।",
+  "c_once": "यह कूपन हर ग्राहक सिर्फ़ एक बार इस्तेमाल कर सकता है।"
  }
 }
