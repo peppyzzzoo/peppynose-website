@@ -2,6 +2,7 @@
 // Rules: the browser never decides a price; every amount is worked out here from the database, in paise.
 import { HttpError, authApi, corsHeaders, sessionUser } from './auth.js';
 import { accountApi, saveAddress } from './account.js';
+import { flushOutbox, mailReady, MAX_ATTEMPTS } from './mailer.js';
 
 const enc = new TextEncoder();
 
@@ -167,6 +168,8 @@ async function loadOrder(env, id, token) {
 }
 // The customer's order page, in the language they ordered in.
 const orderLink = o => `${o.lang === 'en' ? '' : '/' + o.lang}/shop/order.html#o=${o.id}&t=${o.token}`;
+// Emails need a full address: the shop is served by this Worker (SHOP_URL, default the live API host).
+const shopBase = env => String(env.SHOP_URL || 'https://api.peppynose.com').replace(/\/$/, '');
 const items = (env, id) => env.DB.prepare('SELECT sku, name, label, qty, unit_price, gst_rate, hsn FROM order_items WHERE order_id = ?').bind(id).all().then(r => r.results);
 const outbox = (env, order, kind, to, subject, text) =>
   env.DB.prepare('INSERT INTO outbox (order_id, kind, to_addr, subject, body, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(order, kind, to, subject, text, now());
@@ -178,7 +181,7 @@ async function finalize(env, o, ref) {
     .bind(nonce, ref, o.id).run();
   if (!claim.meta.changes) return (await env.DB.prepare('SELECT status FROM orders WHERE id = ?').bind(o.id).first()).status;
   const list = await items(env, o.id), cust = JSON.parse(o.customer), s = await settings(env.DB);
-  const link = orderLink(o);
+  const link = shopBase(env) + orderLink(o);
   try {
     await env.DB.batch([   // one transaction: if any stock would go below 0 (CHECK), nothing here is saved
       ...list.map(i => env.DB.prepare('UPDATE variants SET stock = stock - ? WHERE sku = ?').bind(i.qty, i.sku)),
@@ -322,7 +325,7 @@ async function setStatus(req, env) {
   if (o.status === 'paid_review' && to === 'paid') list.forEach(i => stmts.push(env.DB.prepare('UPDATE variants SET stock = MAX(stock - ?, 0) WHERE sku = ?').bind(i.qty, i.sku)));
   // Refund before it left the shop: the items go back on the shelf.
   if (to === 'refunded' && ['paid', 'packed'].includes(o.status)) list.forEach(i => stmts.push(env.DB.prepare('UPDATE variants SET stock = stock + ? WHERE sku = ?').bind(i.qty, i.sku)));
-  const link = orderLink(o);
+  const link = shopBase(env) + orderLink(o);
   if (to === 'shipped') stmts.push(outbox(env, o.id, 'shipped', c.email, `Your Peppynose order PN-${o.number} is on the way`, `Hi ${c.name},\n\nYour order PN-${o.number} has been shipped.\nTracking number: ${tracking}\n\nSee your order: ${link}\n\n— Peppynose`));
   if (to === 'refunded') stmts.push(outbox(env, o.id, 'refunded', c.email, `Refund for Peppynose order PN-${o.number}`, `Hi ${c.name},\n\nWe have refunded ${rupees(o.total)} for order PN-${o.number}. It can take 5–7 working days to reach your account.\n\n— Peppynose`));
   const r = await env.DB.batch(stmts);
@@ -349,8 +352,8 @@ async function setVariant(req, env) {
 }
 
 async function adminOutbox(env) {
-  const { results } = await env.DB.prepare('SELECT o.id, o.kind, o.to_addr, o.subject, o.body, o.created_at, o.sent_at, d.number FROM outbox o LEFT JOIN orders d ON d.id = o.order_id ORDER BY o.id DESC LIMIT 100').all();
-  return json({ messages: results.map(m => ({ ...m, number: m.number ? 'PN-' + m.number : '' })) });
+  const { results } = await env.DB.prepare('SELECT o.id, o.kind, o.to_addr, o.subject, o.body, o.created_at, o.sent_at, o.attempts, o.last_error, d.number FROM outbox o LEFT JOIN orders d ON d.id = o.order_id ORDER BY o.id DESC LIMIT 100').all();
+  return json({ sending: mailReady(env), max_attempts: MAX_ATTEMPTS, messages: results.map(m => ({ ...m, number: m.number ? 'PN-' + m.number : '' })) });
 }
 
 async function admin(req, url, env) {
@@ -393,28 +396,43 @@ function withCors(req, env, res) {
   return new Response(res.body, { status: res.status, headers });
 }
 
+// Requests that can add emails to the outbox: send them right away, after the reply.
+const MAKES_MAIL = /^\/api\/(pay\/(mock|razorpay)|admin\/order-status)$/;
+
 export default {
-  async fetch(req, env) {
-    const url = new URL(req.url);
-    if (req.method === 'OPTIONS' && url.pathname.startsWith('/api/')) {
-      return withCors(req, env, new Response(null, {
-        status: 204,
-        headers: {
-          // PUT is for the profile and tracker. The live pages call this Worker from another origin.
-          'access-control-allow-methods': 'GET, POST, PUT, OPTIONS',
-          'access-control-allow-headers': 'content-type, x-csrf-token',
-          'access-control-max-age': '600',
-          ...SEC
-        }
-      }));
+  async fetch(req, env, ctx) {
+    const res = await handle(req, env);
+    if (ctx && req.method === 'POST' && res.status < 400 && mailReady(env) && MAKES_MAIL.test(new URL(req.url).pathname)) {
+      ctx.waitUntil(flushOutbox(env).catch(e => console.error('email', e)));
     }
-    if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(req);
-    try { return withCors(req, env, await api(req, url, env)); }
-    catch (e) {
-      const res = e instanceof HttpError
-        ? json({ error: e.message, ...(e.extra || {}) }, e.status)
-        : (console.error(e), json({ error: 'Something went wrong. Please try again.', code: 'server' }, 500));
-      return withCors(req, env, res);
-    }
+    return res;
+  },
+  // Every 10 minutes (wrangler.toml): retries emails that could not be sent yet.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(flushOutbox(env).catch(e => console.error('email', e)));
   }
 };
+
+async function handle(req, env) {
+  const url = new URL(req.url);
+  if (req.method === 'OPTIONS' && url.pathname.startsWith('/api/')) {
+    return withCors(req, env, new Response(null, {
+      status: 204,
+      headers: {
+        // PUT is for the profile and tracker. The live pages call this Worker from another origin.
+        'access-control-allow-methods': 'GET, POST, PUT, OPTIONS',
+        'access-control-allow-headers': 'content-type, x-csrf-token',
+        'access-control-max-age': '600',
+        ...SEC
+      }
+    }));
+  }
+  if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(req);
+  try { return withCors(req, env, await api(req, url, env)); }
+  catch (e) {
+    const res = e instanceof HttpError
+      ? json({ error: e.message, ...(e.extra || {}) }, e.status)
+      : (console.error(e), json({ error: 'Something went wrong. Please try again.', code: 'server' }, 500));
+    return withCors(req, env, res);
+  }
+}

@@ -187,6 +187,9 @@ test('TC-SHOP-12 admin: log in, pack and ship an order with tracking, see the em
   await expect(page.locator('.sh-card-admin h2')).toContainText('shipped');
   await page.getByRole('tab', { name: 'Messages' }).click();
   await expect(page.locator('.sh-msg').first()).toContainText(`${o.number} is on the way`);
+  // Local test server: email sending is off, so messages are saved, not sent.
+  await expect(page.locator('#adm-body .sh-hint')).toContainText('Sending is off');
+  await expect(page.locator('.sh-msg').first()).toContainText('saved, not sent');
   await page.getByRole('tab', { name: 'Prices & stock' }).click();
   const row = page.locator('tr[data-sku="mom-on-board-sign-1"]');
   await row.locator('[name=price]').fill('259');

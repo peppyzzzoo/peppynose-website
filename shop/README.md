@@ -22,6 +22,17 @@ npm run dev          # builds, makes a fresh test database, starts http://localh
 - `db/schema.sql` — the database tables (Cloudflare D1 / SQLite).
 - `public/shop/` — shop.js and shop.css used by the shop pages.
 
+## Order emails
+The shop stores every email it should send in the `outbox` table: order confirmed, shipped and refunded for the customer, and new order / out of stock for `seller_email`. `src/mailer.js` sends them through [Resend](https://resend.com) once switched on; until then they are only saved (shop admin → Messages says "Sending is off").
+
+To switch sending on:
+1. Make a Resend account and verify the `peppynose.com` domain there (it gives DNS records to add).
+2. Run migration 006 once: `npx wrangler d1 execute peppynose_shop --remote --file=db/auth-migration-006.sql`
+3. `npx wrangler secret put RESEND_API_KEY` (paste the key when asked; never in git or chat).
+4. In `wrangler.toml` `[vars]`: `EMAIL_PROVIDER = "resend"` and `EMAIL_FROM = "Peppynose <orders@peppynose.com>"`, then `npx wrangler deploy`.
+
+Emails go out right after a payment or a status change, and a Cron Trigger every 10 minutes retries the ones that failed, up to 5 tries each (admin → Messages shows sent / waiting / FAILED with the error). Each email is claimed before sending, so none is sent twice. Order links in emails use `SHOP_URL` (default `https://api.peppynose.com`). Emails saved before step 2 are sent too; the migration file shows how to skip them.
+
 ## Opening the shop to the public
 One switch on the live Worker: `SHOP_LIVE = "1"` (in `wrangler.toml` `[vars]`, or in the Cloudflare dashboard). It only counts when real payments are on too: `PAYMENT_MODE = "razorpay"` and both `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` set as secrets (`src/worker.js` `shopLive`). Then:
 - `GET /api/catalogue` returns `live: true`.

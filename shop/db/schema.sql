@@ -83,7 +83,8 @@ CREATE TABLE order_events (
   note     TEXT
 );
 
--- Messages waiting to be sent (email / SMS). Locally they are only stored and shown in the admin page.
+-- Emails waiting to be sent. src/mailer.js sends them once EMAIL_PROVIDER is set; until then
+-- they are only stored and shown in the admin page. attempts stops at 5; last_error is the last failure.
 CREATE TABLE outbox (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   order_id   TEXT,
@@ -92,7 +93,9 @@ CREATE TABLE outbox (
   subject    TEXT NOT NULL,
   body       TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  sent_at    TEXT
+  sent_at    TEXT,
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT
 );
 
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -105,7 +108,7 @@ CREATE TABLE login_attempts (ip TEXT NOT NULL, at TEXT NOT NULL);
 -- email_verified is 1 only for an email Google verified. A typed email is 0 and
 -- a verified Google sign-in for that address can take it over.
 -- This file is for a fresh local database only. A live database uses
--- auth-migration.sql and auth-migration-002.sql to auth-migration-005.sql.
+-- auth-migration.sql and auth-migration-002.sql to auth-migration-006.sql.
 CREATE TABLE users (
   id               TEXT PRIMARY KEY,
   email            TEXT UNIQUE COLLATE NOCASE,

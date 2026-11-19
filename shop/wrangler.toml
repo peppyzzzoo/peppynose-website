@@ -22,5 +22,13 @@ database_id = "11cd4023-e14d-47ad-829e-0bc87f433607"
 OTP_SMS_PROVIDER = "off"
 OTP_EMAIL_PROVIDER = "off"
 COOKIE_DOMAIN = ".peppynose.com"
+# Order emails (src/mailer.js). "off" stores them only (admin → Messages).
+# To send: EMAIL_PROVIDER = "resend", EMAIL_FROM = "Peppynose <orders@peppynose.com>"
+# (a domain verified in Resend), and the secret RESEND_API_KEY (wrangler secret put).
+EMAIL_PROVIDER = "off"
 AUTH_ORIGINS = "https://www.peppynose.com,https://peppynose.com"
 GOOGLE_CLIENT_ID = "638977578641-7sh9ipk6l78netgnuq09g8gbsat94hd8.apps.googleusercontent.com"
+
+# Retry order emails that could not be sent yet (src/mailer.js).
+[triggers]
+crons = ["*/10 * * * *"]
